@@ -772,29 +772,48 @@ mixin SchedulerBinding on BindingBase, ServicesBinding {
       Timeline.finishSync();
     });
 
-    // We use scheduleMicrotask here to ensure that microtasks flush in between.
-    scheduleMicrotask(() {
-      assert(_warmUpFrame);
-      handleBeginFrame(null);
+    final Set<void Function()> scheduledMicrotasks = <void Function()>{};
 
+    void Function() drawFrameCallback;
+    drawFrameCallback = () {
+      if (scheduledMicrotasks.isEmpty) {
+      assert(_warmUpFrame);
+      handleDrawFrame();
+      // We call resetEpoch after this frame so that, in the hot reload case,
+      // the very next frame pretends to have occurred immediately after this
+      // warm-up frame. The warm-up frame's timestamp will typically be far in
+      // the past (the time of the last real frame), so if we didn't reset the
+      // epoch we would see a sudden jump from the old time in the warm-up frame
+      // to the new time in the "real" frame. The biggest problem with this is
+      // that implicit animations end up being triggered at the old time and
+      // then skipping every frame and finishing in the new time.
+      resetEpoch();
+      _warmUpFrame = false;
+      _warmUpFrameCompleter.complete();
+      if (hadScheduledFrame)
+        scheduleFrame();
+      } else {
+        scheduleMicrotask(drawFrameCallback);
+      }
+    };
+
+    Zone.current.fork(specification: ZoneSpecification(
+      scheduleMicrotask: (Zone self, ZoneDelegate parentDelegate, Zone zone, void callback()) {
+        scheduledMicrotasks.add(callback);
+        parentDelegate.scheduleMicrotask(zone, () {
+          scheduledMicrotasks.remove(callback);
+          callback();
+        });
+      }
+    )).run(() {
+      // We use scheduleMicrotask here to ensure that microtasks flush in between.
       scheduleMicrotask(() {
         assert(_warmUpFrame);
-        handleDrawFrame();
-        // We call resetEpoch after this frame so that, in the hot reload case,
-        // the very next frame pretends to have occurred immediately after this
-        // warm-up frame. The warm-up frame's timestamp will typically be far in
-        // the past (the time of the last real frame), so if we didn't reset the
-        // epoch we would see a sudden jump from the old time in the warm-up frame
-        // to the new time in the "real" frame. The biggest problem with this is
-        // that implicit animations end up being triggered at the old time and
-        // then skipping every frame and finishing in the new time.
-        resetEpoch();
-        _warmUpFrame = false;
-        _warmUpFrameCompleter.complete();
-        if (hadScheduledFrame)
-          scheduleFrame();
+        handleBeginFrame(null);
+        scheduleMicrotask(drawFrameCallback);
       });
-    });
+    },
+    );
   }
 
   Duration _firstRawTimeStampInEpoch;
